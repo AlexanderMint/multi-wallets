@@ -1,0 +1,235 @@
+package btc
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/tyler-smith/go-bip32"
+	"math/big"
+	//You need to download and import the golang.orx/x package here, the specific method is git clone https://github.com/golang/crypto.git, and then import it under ￥GOPATH:\src\golang
+	"golang.org/x/crypto/ripemd160"
+	"log"
+)
+
+const (
+	OP_1 = 81 + iota
+	OP_2 //82
+	OP_3 //83
+	OP_4 //..
+	OP_5
+	OP_6
+	OP_7
+	OP_8
+	OP_9
+	OP_10
+	OP_11
+	OP_12
+	OP_13
+	OP_14 //..
+	OP_15 //95
+	OP_16 //96
+)
+
+const (
+	OP_0             = 0
+	OP_PUSHDATA1     = 76
+	OP_PUSHDATA2     = 77
+	OP_DUP           = 118
+	OP_EQUAL         = 135
+	OP_EQUALVERIFY   = 136
+	OP_HASH160       = 169
+	OP_CHECKSIG      = 172
+	OP_CHECKMULTISIG = 174
+)
+
+// https://github.com/0x4139/bitcoin-p2sh/blob/34e38ac6ae0a517feb2839cc887a823ffb85f79c/btc/script.go
+
+const version = byte(0x00)
+const addressChecksumLen = 4
+var b58Alphabet = []byte("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+//Define the structure of the wallet, including:
+//1. Private key
+//2. Public key
+type Wallet struct {
+
+	//The public key is a byte array
+	PublicKey []byte
+
+}
+
+func KeyToBtcAddress(key bip32.Key) string {
+	publicKey, _ := crypto.DecompressPubkey(key.Key)
+	fullPublicKey := append(publicKey.X.Bytes(), publicKey.Y.Bytes()...)
+	wallet := &Wallet{fullPublicKey}
+	address := wallet.getAddress()
+
+	return string(address)
+}
+
+//Create a wallet
+func NewWallet() *Wallet{
+
+	//Generate public and private key pairs by newKeyPair method
+	_, publicKey := newKeyPair()
+
+	return &Wallet{publicKey}
+}
+
+func (w *Wallet) getAddress() []byte {
+
+	//Use RIPEMD-160 hash algorithm for public key transformation
+	ripemd160Hash := w.Ripemd160Hash(w.PublicKey)
+	fmt.Println("PublicKey for Ripemd160Hash is : ", ripemd160Hash)
+
+	//Splice the version with the public key and return the checksum of the first four bytes through the CheckSum method
+	version_ripemd160Hash := append([]byte{version}, ripemd160Hash...)
+	checkSumBytes := CheckSum(version_ripemd160Hash)
+
+	//Splice version+public key+checksum to generate 25 bytes
+	bytes := append(version_ripemd160Hash, checkSumBytes...)
+
+	//Base58 encode these 25 bytes and return
+	return Base58Encode(bytes)
+}
+
+func CheckSum(payload []byte) []byte {
+
+	//The incoming payload here is actually the version+public key, and it performs two sha-256 operations on it
+	hash1 := sha256.Sum256(payload)
+	hash2 := sha256.Sum256(hash1[:])
+
+	//Return the first four bytes, the value of checkSum
+	return hash2[:addressChecksumLen]
+}
+
+//RIPEMD-160 algorithm
+func (w *Wallet) Ripemd160Hash(publicKey []byte) []byte{
+
+	//The logic here is to perform a SHA-256 hash operation on the incoming public key and return a 256-bit hash value
+	//New SHA-256 transform object
+	hash256 := sha256.New()
+	//Incoming public key
+	hash256.Write(publicKey)
+	//Hash conversion
+	hash := hash256.Sum(nil)
+	fmt.Println("hash256 :", hash)
+
+	// Perform the ripemd160 operation on the above 256-bit hash value and return the 160-bit hash value
+	ripemd160 := ripemd160.New()
+	ripemd160.Write(hash)
+	return ripemd160.Sum(nil)
+}
+
+//Byte array to Base58 encryption
+func Base58Encode(input []byte) []byte {
+
+	var result []byte
+	x := big.NewInt(0).SetBytes(input)
+
+	base := big.NewInt(int64(len(b58Alphabet)))
+	zero := big.NewInt(0)
+	mod := &big.Int{}
+
+	//big.Int class comes with cmp method; return 1: the previous value is greater than the parameter value; return 0: the previous value is equal to the parameter value; return -1: the previous value is equal to the parameter value
+	for x.Cmp(zero) != 0 {
+		//Remainder of 58 for x and corresponding to the character in b58Alphabet
+		x.DivMod(x, base, mod)
+		result = append(result, b58Alphabet[mod.Int64()])
+	}
+
+	//Reverse the byte group of result
+	ReverseBytes(result)
+
+	for b := range input {
+		if b == 0x00 {
+			result = append([]byte{b58Alphabet[0]}, result...)
+		} else {
+			break
+		}
+	}
+
+	return result
+}
+
+func Base58Decode(input []byte) []byte {
+	result := big.NewInt(0)
+	zeroBytes := 0
+
+	for b := range input {
+		if b == 0x00 {
+			zeroBytes++
+		}
+	}
+
+	payload := input[zeroBytes:]
+	for _,b := range payload {
+		charIndex := bytes.IndexByte(b58Alphabet, b)
+		result.Mul(result, big.NewInt(58))
+		result.Add(result, big.NewInt(int64(charIndex)))
+	}
+
+	decoded := result.Bytes()
+	decoded = append(bytes.Repeat([]byte{byte(0x00)}, zeroBytes), decoded...)
+
+	return decoded
+}
+
+//The byte group is reversed. Note that the byte array is transferred in Go, so assignment can be performed here
+func ReverseBytes(data []byte) {
+	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
+		data[i], data[j] = data[j], data[i]
+	}
+}
+
+func newKeyPair() (ecdsa.PrivateKey, []byte){
+
+	//Use P256 to return a P-256 curve object
+	curve := elliptic.P256()
+	//rand.Reader is a global, shared strong random number generator for passwords. This paragraph indicates that a strong random number is used to generate a private key through an elliptic curve signature algorithm
+	private, err := ecdsa.GenerateKey(curve, rand.Reader)
+	fmt.Println("Private Key is :", private)
+	if err != nil {
+		//If an error is generated when generating the private key, print the log and throw an exception upward,
+		log.Panic(err)
+	}
+	//The public key is generated from the private key. The public key is composed of the X field and Y field of the private key. "..." indicates a variable parameter
+	pubKey := append(private.PublicKey.X.Bytes(), private.PublicKey.Y.Bytes()...)
+	fmt.Println("Public Key is :", pubKey)
+
+	return *private, pubKey
+}
+
+func IsValidForAdress(adress []byte) bool {
+
+	//Decode the address to base58 to generate version+public key hash+checksum total 25 bytes
+	version_public_checksumBytes := Base58Decode(adress)
+
+	//[25-4:] is the number after 21 bytes (22, 23, 24, 25 total 4 bytes)
+	checkSumBytes := version_public_checksumBytes[len(version_public_checksumBytes) - addressChecksumLen:]
+
+	//[:25-4] is the first 21 bytes (1~21, 21 bytes in total)
+	version_ripemd160 := version_public_checksumBytes[:len(version_public_checksumBytes) - addressChecksumLen]
+
+	//Take the first 21 bytes of the byte array of version+public+checksum to perform two 256 hash operations, and take the first 4 bytes of the result value
+	checkBytes := CheckSum(version_ripemd160)
+
+	if bytes.Compare(checkSumBytes, checkBytes) == 0 {
+		return true
+	}
+	return false
+}
+
+func main()  {
+
+	Wallet := NewWallet()
+	address := Wallet.getAddress()
+	fmt.Println("address: %s\n",string(address))
+
+	isValid := IsValidForAdress(address)
+	fmt.Println("isValid is:", isValid)
+}
